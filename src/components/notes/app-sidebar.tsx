@@ -8,7 +8,6 @@ import {
   House,
   Inbox,
   MoreHorizontal,
-  NotebookPen,
   Pencil,
   Pin,
   Plus,
@@ -38,6 +37,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { Logo } from "@/components/logo";
 import type { Folder, Note, View } from "@/lib/notes-store";
 import { cn } from "@/lib/utils";
 
@@ -99,9 +99,7 @@ export function AppSidebar({
     <Sidebar>
       <SidebarHeader className="gap-3 p-4">
         <div className="flex items-center gap-2.5">
-          <div className="flex size-9 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm">
-            <NotebookPen className="size-5" />
-          </div>
+          <Logo className="size-10 shrink-0 drop-shadow-sm" />
           <div className="leading-tight">
             <p className="text-base font-semibold tracking-tight">Folio</p>
             <p className="text-xs text-muted-foreground">Notes, neatly filed</p>
