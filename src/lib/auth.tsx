@@ -17,6 +17,15 @@ type Auth = {
   signOut: () => Promise<void>;
 };
 
+/**
+ * Where confirmation emails should send people. Prefer the configured public URL so
+ * a sign-up made from localhost still links to the live site.
+ */
+function siteUrl() {
+  const configured = process.env.NEXT_PUBLIC_SITE_URL?.trim().replace(/\/+$/, "");
+  return configured || window.location.origin;
+}
+
 const AuthContext = React.createContext<Auth | null>(null);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -50,7 +59,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const { data, error } = await sb.auth.signUp({
           email,
           password,
-          options: { emailRedirectTo: window.location.origin },
+          options: { emailRedirectTo: `${siteUrl()}/login` },
         });
         if (error) return { error: error.message };
         // With email confirmation on, no session is returned until the link is clicked.
