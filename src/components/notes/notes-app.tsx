@@ -214,9 +214,9 @@ function NotesWorkspace() {
   );
 }
 
-export function NotesApp() {
+export function NotesApp({ userId }: { userId: string | null }) {
   return (
-    <NotesProvider>
+    <NotesProvider userId={userId}>
       <NotesWorkspace />
     </NotesProvider>
   );

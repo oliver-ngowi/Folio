@@ -7,6 +7,7 @@ import {
   FolderPlus,
   House,
   Inbox,
+  LogOut,
   MoreHorizontal,
   Pencil,
   Pin,
@@ -38,6 +39,8 @@ import {
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Logo } from "@/components/logo";
+import { AppearanceDialog } from "@/components/appearance-dialog";
+import { useAuth } from "@/lib/auth";
 import type { Folder, Note, View } from "@/lib/notes-store";
 import { cn } from "@/lib/utils";
 
@@ -67,6 +70,7 @@ export function AppSidebar({
   onMoveNote,
 }: Props) {
   const [dropTarget, setDropTarget] = React.useState<string | null>(null);
+  const auth = useAuth();
 
   const count = (pred: (n: Note) => boolean) => notes.filter(pred).length;
 
@@ -214,8 +218,16 @@ export function AppSidebar({
         </SidebarGroup>
       </SidebarContent>
 
-      <SidebarFooter className="flex-row items-center justify-between border-t p-3">
-        <p className="px-1 text-xs text-muted-foreground">Saved in this browser</p>
+      <SidebarFooter className="flex-row items-center justify-between gap-1 border-t p-3">
+        <p className="min-w-0 flex-1 truncate px-1 text-xs text-muted-foreground" title={auth.session?.user.email}>
+          {auth.enabled ? (auth.session?.user.email ?? "Signed in") : "Saved in this browser"}
+        </p>
+        {auth.enabled && (
+          <Button variant="ghost" size="icon-sm" title="Sign out" aria-label="Sign out" onClick={() => void auth.signOut()}>
+            <LogOut />
+          </Button>
+        )}
+        <AppearanceDialog />
         <ThemeToggle />
       </SidebarFooter>
     </Sidebar>

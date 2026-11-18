@@ -1,7 +1,20 @@
 "use client";
 
 import * as React from "react";
-import { ImageIcon, ImagePlus, Mic, Square, Trash2, TriangleAlert, X, Check } from "lucide-react";
+import {
+  Check,
+  ImageIcon,
+  ImagePlus,
+  Mic,
+  Pause,
+  Play,
+  RotateCcw,
+  RotateCw,
+  Square,
+  Trash2,
+  TriangleAlert,
+  X,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
@@ -15,7 +28,14 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { uid, type Attachment } from "@/lib/notes-store";
-import { formatBytes, formatDuration, prepareImage, putBlob, useMediaUrl } from "@/lib/media-store";
+import {
+  UnsupportedImageError,
+  formatBytes,
+  formatDuration,
+  prepareImage,
+  putBlob,
+  useMediaUrl,
+} from "@/lib/media-store";
 import { cn } from "@/lib/utils";
 
 const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
@@ -48,6 +68,7 @@ export function useMediaIntake(onAdd: (a: Attachment) => void) {
       }
       let added = 0;
       let tooBig = 0;
+      const unsupported: string[] = [];
       for (const file of images) {
         if (file.size > MAX_IMAGE_BYTES) {
           tooBig++;
@@ -59,12 +80,21 @@ export function useMediaIntake(onAdd: (a: Attachment) => void) {
           await putBlob(id, blob);
           onAdd({ id, kind: "image", name: file.name || "Pasted photo", size: blob.size, createdAt: Date.now() });
           added++;
-        } catch {
+        } catch (e) {
+          if (e instanceof UnsupportedImageError) {
+            unsupported.push(`“${file.name}” is really ${e.detected}`);
+            continue;
+          }
           flash("error", "Couldn’t save the photo — your browser storage may be full or blocked.");
           return;
         }
       }
       if (tooBig) flash("error", `${tooBig} photo${tooBig > 1 ? "s were" : " was"} over 25 MB and skipped.`);
+      else if (unsupported.length)
+        flash(
+          "error",
+          `Couldn’t read ${unsupported.join("; ")}, which this browser can’t display. Convert it to JPG or PNG and try again.`,
+        );
       else flash("info", `${added} photo${added > 1 ? "s" : ""} added`);
     },
     [flash, onAdd],
@@ -405,7 +435,8 @@ export function AttachmentList({
 
 function PhotoThumb({ attachment, onOpen }: { attachment: Attachment; onOpen: () => void }) {
   const { url, failed } = useMediaUrl(attachment.id);
-  if (failed)
+  const [broken, setBroken] = React.useState(false);
+  if (failed || broken)
     return (
       <div className="flex size-full flex-col items-center justify-center gap-1 p-2 text-center text-xs text-muted-foreground">
         <TriangleAlert className="size-5" /> Photo unavailable
@@ -420,24 +451,206 @@ function PhotoThumb({ attachment, onOpen }: { attachment: Attachment; onOpen: ()
       className="size-full cursor-zoom-in focus-visible:outline-2 focus-visible:outline-ring"
     >
       {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src={url} alt={attachment.name} className="size-full object-cover" />
+      <img src={url} alt={attachment.name} className="size-full object-cover" onError={() => setBroken(true)} />
     </button>
   );
 }
 
 function PhotoFull({ attachment }: { attachment: Attachment }) {
   const { url, failed } = useMediaUrl(attachment.id);
-  if (failed) return <p className="text-sm text-muted-foreground">This photo is no longer available.</p>;
+  const [broken, setBroken] = React.useState(false);
+  if (failed || broken) return <p className="text-sm text-muted-foreground">This photo is no longer available.</p>;
   if (!url) return <div className="h-64 animate-pulse rounded-lg bg-muted" />;
-  // eslint-disable-next-line @next/next/no-img-element
-  return <img src={url} alt={attachment.name} className="max-h-[70vh] w-full rounded-lg object-contain" />;
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={url}
+      alt={attachment.name}
+      className="max-h-[70vh] w-full rounded-lg object-contain"
+      onError={() => setBroken(true)}
+    />
+  );
+}
+
+const BAR_COUNT = 56;
+const SPEEDS = [1, 1.5, 2];
+
+/** Downsamples a decoded recording into BAR_COUNT peak values between 0 and 1. */
+async function computePeaks(url: string): Promise<number[] | null> {
+  try {
+    const data = await (await fetch(url)).arrayBuffer();
+    const Ctx = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    const ctx = new Ctx();
+    try {
+      const buffer = await ctx.decodeAudioData(data);
+      const samples = buffer.getChannelData(0);
+      const step = Math.max(1, Math.floor(samples.length / BAR_COUNT));
+      const peaks = Array.from({ length: BAR_COUNT }, (_, i) => {
+        let max = 0;
+        for (let j = i * step; j < Math.min(samples.length, (i + 1) * step); j++) {
+          max = Math.max(max, Math.abs(samples[j]));
+        }
+        return max;
+      });
+      const top = Math.max(...peaks, 0.001);
+      return peaks.map((p) => p / top);
+    } finally {
+      void ctx.close();
+    }
+  } catch {
+    return null;
+  }
 }
 
 function AudioPlayer({ attachment }: { attachment: Attachment }) {
   const { url, failed } = useMediaUrl(attachment.id);
+  const audio = React.useRef<HTMLAudioElement>(null);
+  const [playing, setPlaying] = React.useState(false);
+  const [time, setTime] = React.useState(0);
+  const [mediaDuration, setMediaDuration] = React.useState(0);
+  const [peaks, setPeaks] = React.useState<number[] | null>(null);
+  const [speed, setSpeed] = React.useState(1);
+
+  // MediaRecorder files often report an infinite duration; fall back to the recorded length.
+  const duration = Number.isFinite(mediaDuration) && mediaDuration > 0 ? mediaDuration : (attachment.duration ?? 0);
+
+  React.useEffect(() => {
+    if (!url) return;
+    let cancelled = false;
+    computePeaks(url).then((p) => !cancelled && setPeaks(p));
+    return () => {
+      cancelled = true;
+    };
+  }, [url]);
+
   if (failed) return <p className="text-xs text-muted-foreground">This recording is no longer available.</p>;
-  if (!url) return <div className="h-10 animate-pulse rounded-lg bg-muted" />;
-  return <audio controls preload="metadata" src={url} className="h-10 w-full" aria-label={attachment.name} />;
+  if (!url) return <div className="h-12 animate-pulse rounded-lg bg-muted" />;
+
+  const seek = (to: number) => {
+    const el = audio.current;
+    if (!el) return;
+    const next = Math.min(Math.max(0, to), duration || to);
+    el.currentTime = next;
+    setTime(next);
+  };
+
+  const toggle = () => {
+    const el = audio.current;
+    if (!el) return;
+    if (el.paused) {
+      // Restart from the top if the recording already finished.
+      if (duration && el.currentTime >= duration - 0.05) el.currentTime = 0;
+      void el.play().catch(() => setPlaying(false));
+    } else el.pause();
+  };
+
+  const cycleSpeed = () => {
+    const next = SPEEDS[(SPEEDS.indexOf(speed) + 1) % SPEEDS.length];
+    setSpeed(next);
+    if (audio.current) audio.current.playbackRate = next;
+  };
+
+  const seekFromPointer = (e: React.PointerEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    seek(((e.clientX - rect.left) / rect.width) * duration);
+  };
+
+  const progress = duration ? Math.min(1, time / duration) : 0;
+  const bars = peaks ?? Array.from({ length: BAR_COUNT }, (_, i) => 0.25 + 0.2 * Math.sin(i / 3));
+
+  return (
+    <div className="flex items-center gap-2">
+      <audio
+        ref={audio}
+        src={url}
+        preload="metadata"
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onEnded={() => setPlaying(false)}
+        onTimeUpdate={(e) => setTime(e.currentTarget.currentTime)}
+        onLoadedMetadata={(e) => {
+          const el = e.currentTarget;
+          setMediaDuration(el.duration);
+          // Chrome quirk: force the real duration of MediaRecorder webm files to be computed.
+          if (el.duration === Infinity) {
+            el.currentTime = 1e101;
+            el.ontimeupdate = () => {
+              el.ontimeupdate = null;
+              el.currentTime = 0;
+              setMediaDuration(el.duration);
+            };
+          }
+        }}
+        onDurationChange={(e) => setMediaDuration(e.currentTarget.duration)}
+      />
+
+      <Button
+        size="icon"
+        className="size-9 shrink-0 rounded-full"
+        onClick={toggle}
+        aria-label={playing ? "Pause" : "Play"}
+        title={playing ? "Pause" : "Play"}
+      >
+        {playing ? <Pause className="fill-current" /> : <Play className="fill-current" />}
+      </Button>
+
+      <div
+        role="slider"
+        tabIndex={0}
+        aria-label={`Seek ${attachment.name}`}
+        aria-valuemin={0}
+        aria-valuemax={Math.round(duration)}
+        aria-valuenow={Math.round(time)}
+        aria-valuetext={`${formatDuration(time)} of ${formatDuration(duration)}`}
+        className="flex h-10 min-w-0 flex-1 cursor-pointer touch-none items-center gap-[2px] rounded-md focus-visible:outline-2 focus-visible:outline-ring"
+        onPointerDown={(e) => {
+          e.currentTarget.setPointerCapture(e.pointerId);
+          seekFromPointer(e);
+        }}
+        onPointerMove={(e) => e.buttons && seekFromPointer(e)}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowRight") seek(time + 5);
+          else if (e.key === "ArrowLeft") seek(time - 5);
+          else return;
+          e.preventDefault();
+        }}
+      >
+        {bars.map((p, i) => (
+          <span
+            key={i}
+            className={cn(
+              "flex-1 rounded-full transition-colors",
+              (i + 0.5) / BAR_COUNT <= progress ? "bg-primary" : "bg-muted-foreground/30",
+            )}
+            style={{ height: `${Math.max(12, p * 100)}%` }}
+          />
+        ))}
+      </div>
+
+      <span className="w-[5.5rem] shrink-0 text-right text-xs text-muted-foreground tabular-nums">
+        {formatDuration(time)} / {formatDuration(duration)}
+      </span>
+
+      <div className="flex shrink-0 items-center">
+        <Button variant="ghost" size="icon-sm" onClick={() => seek(time - 5)} aria-label="Back 5 seconds" title="Back 5s">
+          <RotateCcw />
+        </Button>
+        <Button variant="ghost" size="icon-sm" onClick={() => seek(time + 5)} aria-label="Forward 5 seconds" title="Forward 5s">
+          <RotateCw />
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="w-10 px-0 text-xs tabular-nums"
+          onClick={cycleSpeed}
+          aria-label={`Playback speed ${speed}x`}
+          title="Playback speed"
+        >
+          {speed}×
+        </Button>
+      </div>
+    </div>
+  );
 }
 
 /* ------------------------------------------------------------------ */

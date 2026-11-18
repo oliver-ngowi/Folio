@@ -2,6 +2,8 @@
 
 import * as React from "react";
 import { deleteBlob } from "./media-store";
+import { supabaseEnabled } from "./supabase";
+import { fetchRemote, pushChanges } from "./supabase-sync";
 
 export type Folder = { id: string; name: string; color: string };
 export type Attachment = {
@@ -191,14 +193,26 @@ type Store = {
 
 const NotesContext = React.createContext<Store | null>(null);
 
-export function NotesProvider({ children }: { children: React.ReactNode }) {
+export function NotesProvider({ children, userId }: { children: React.ReactNode; userId: string | null }) {
+  // Cache per user so one account never sees (or uploads) another's notes on a shared browser.
+  const storageKey = userId ? `${STORAGE_KEY}:${userId}` : STORAGE_KEY;
   const [wrapped, dispatch] = React.useReducer(wrappedReducer, EMPTY);
   const { hydrated, ...state } = wrapped;
+
+  // Last state known to match Supabase; null until the first remote load finishes.
+  const synced = React.useRef<State | null>(null);
+  const pushing = React.useRef<Promise<void>>(Promise.resolve());
+  const [remoteReady, setRemoteReady] = React.useState(false);
 
   React.useEffect(() => {
     let loaded: State | null = null;
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
+      let raw = localStorage.getItem(storageKey);
+      if (!raw && userId) {
+        // One-time adoption of notes written before accounts existed.
+        raw = localStorage.getItem(STORAGE_KEY);
+        if (raw) localStorage.removeItem(STORAGE_KEY);
+      }
       if (raw) {
         const parsed = JSON.parse(raw) as State;
         if (Array.isArray(parsed.folders) && Array.isArray(parsed.notes)) {
@@ -209,20 +223,59 @@ export function NotesProvider({ children }: { children: React.ReactNode }) {
     } catch {
       /* ignore corrupt or unavailable storage */
     }
-    dispatch({ type: "hydrate", state: loaded ?? seed() });
+    const local = loaded ?? seed();
+    dispatch({ type: "hydrate", state: local });
+
+    // Then reconcile with Supabase (if configured). Remote data wins when it exists;
+    // otherwise the local notes are uploaded by the sync effect below.
+    if (!supabaseEnabled) return;
+    let cancelled = false;
+    fetchRemote().then((remote) => {
+      if (cancelled || !remote) return;
+      if (remote.folders.length || remote.notes.length) {
+        synced.current = remote;
+        dispatch({ type: "hydrate", state: remote });
+      } else {
+        synced.current = { folders: [], notes: [] };
+      }
+      setRemoteReady(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once per mounted user
   }, []);
+
+  React.useEffect(() => {
+    if (!hydrated || !remoteReady) return;
+    const t = setTimeout(() => {
+      const next = { folders: state.folders, notes: state.notes };
+      pushing.current = pushing.current.then(async () => {
+        const prev = synced.current;
+        if (!prev) return;
+        try {
+          await pushChanges(prev, next);
+          synced.current = next;
+        } catch (e) {
+          // Keep `synced` as-is so the next change retries the whole difference.
+          console.warn("[folio] Supabase sync failed; will retry on next change.", e);
+        }
+      });
+    }, 800);
+    return () => clearTimeout(t);
+  }, [state, hydrated, remoteReady]);
 
   React.useEffect(() => {
     if (!hydrated) return;
     const t = setTimeout(() => {
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        localStorage.setItem(storageKey, JSON.stringify(state));
       } catch {
         /* storage full or blocked */
       }
     }, 250);
     return () => clearTimeout(t);
-  }, [state, hydrated]);
+  }, [state, hydrated, storageKey]);
 
   const store = React.useMemo<Store>(
     () => ({

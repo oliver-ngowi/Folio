@@ -123,6 +123,11 @@
   }
   body {
     @apply bg-background text-foreground;
+    /* Set by the appearance dialog when the user picks a photo background. */
+    background-image: var(--folio-bg-image, none);
+    background-size: cover;
+    background-position: center;
+    background-attachment: fixed;
   }
   html {
     @apply font-sans;
