@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { MoreHorizontal, Pencil, PenLine, Pin, Search, Trash2, X } from "lucide-react";
+import { MoreHorizontal, Pencil, Pin, Plus, Search, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
@@ -22,20 +22,34 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { SidebarTrigger } from "@/components/ui/sidebar";
-import { noteTitle, type Folder, type Note } from "@/lib/notes-store";
+import { KIND_META, noteTitle, type Folder, type Kind, type Note } from "@/lib/notes-store";
+import { isOverdue, todayStr } from "@/lib/dates";
 import { formatDate } from "./note-list";
 import { AttachmentBadges } from "./note-attachments";
+import { TaskRow } from "./task-list";
 
 type Props = {
   notes: Note[];
   folders: Folder[];
-  onNewNote: () => void;
+  onNewEntry: (kind: Kind) => void;
   onOpenNote: (id: string) => void;
   onDeleteNote: (id: string) => void;
+  onToggleTask: (id: string, done: boolean) => void;
 };
 
-export function HomeScreen({ notes, folders, onNewNote, onOpenNote, onDeleteNote }: Props) {
+export function HomeScreen({ notes, folders, onNewEntry, onOpenNote, onDeleteNote, onToggleTask }: Props) {
   const [query, setQuery] = React.useState("");
+
+  const today = todayStr();
+  const dueNow = React.useMemo(
+    () =>
+      notes
+        .filter((n) => n.kind === "task" && !n.done && n.date && (n.date === today || isOverdue(n)))
+        .sort((a, b) => (a.date ?? "").localeCompare(b.date ?? "") || (a.time ?? "").localeCompare(b.time ?? ""))
+        .slice(0, 5),
+    [notes, today],
+  );
+  const journaledToday = notes.some((n) => n.kind === "journal" && n.date === today);
   const [toDelete, setToDelete] = React.useState<Note | null>(null);
   const q = query.trim().toLowerCase();
   const folderMap = React.useMemo(() => new Map(folders.map((f) => [f.id, f])), [folders]);
@@ -57,7 +71,7 @@ export function HomeScreen({ notes, folders, onNewNote, onOpenNote, onDeleteNote
       <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-8 px-5 py-10 md:py-20">
         <div className="text-center">
           <h1 className="text-3xl font-bold tracking-tight">{greeting}</h1>
-          <p className="mt-2 text-muted-foreground">Find a note, or jot something down right away.</p>
+          <p className="mt-2 text-muted-foreground">What’s on your mind?</p>
         </div>
 
         <div className="flex items-center gap-3">
@@ -71,8 +85,8 @@ export function HomeScreen({ notes, folders, onNewNote, onOpenNote, onDeleteNote
                 if (e.key === "Escape") setQuery("");
                 if (e.key === "Enter" && results.length > 0 && q) onOpenNote(results[0].id);
               }}
-              placeholder="Search all your notes…"
-              aria-label="Search notes"
+              placeholder="Search everything…"
+              aria-label="Search"
               className="h-12 rounded-full pr-11 pl-12 text-base shadow-xs md:text-base"
             />
             {query && (
@@ -85,24 +99,61 @@ export function HomeScreen({ notes, folders, onNewNote, onOpenNote, onDeleteNote
               </button>
             )}
           </div>
-          <Button
-            onClick={onNewNote}
-            aria-label="Write a new note"
-            title="Write a new note"
-            className="h-12 shrink-0 gap-2 rounded-full px-5 text-base shadow-md"
-          >
-            <PenLine className="size-5" />
-            <span className="hidden sm:inline">Write</span>
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              aria-label="Create something new"
+              title="Create something new"
+              render={<Button className="h-12 shrink-0 gap-2 rounded-full px-5 text-base shadow-md" />}
+            >
+              <Plus className="size-5" />
+              New
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="min-w-48">
+              {(["note", "journal", "task"] as Kind[]).map((k) => (
+                <DropdownMenuItem key={k} onClick={() => onNewEntry(k)}>
+                  <span className="size-2.5 rounded-full" style={{ backgroundColor: KIND_META[k].color }} />
+                  {k === "journal" ? "Journal entry" : KIND_META[k].label}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
+
+        {!q && (dueNow.length > 0 || !journaledToday) && (
+          <section aria-label="Today" className="flex flex-col gap-2">
+            <h2 className="px-1 text-sm font-medium text-muted-foreground">Today</h2>
+            {dueNow.length > 0 && (
+              <div className="rounded-2xl border p-1.5">
+                {dueNow.map((t) => (
+                  <TaskRow
+                    key={t.id}
+                    task={t}
+                    onToggle={() => onToggleTask(t.id, true)}
+                    onOpen={() => onOpenNote(t.id)}
+                  />
+                ))}
+              </div>
+            )}
+            {!journaledToday && (
+              <button
+                type="button"
+                onClick={() => onNewEntry("journal")}
+                className="flex items-center gap-3 rounded-2xl border border-dashed px-4 py-3 text-left text-sm text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+              >
+                <span className="size-2.5 rounded-full" style={{ backgroundColor: KIND_META.journal.color }} />
+                Write today’s journal
+              </button>
+            )}
+          </section>
+        )}
 
         <section>
           <h2 className="mb-2 px-1 text-sm font-medium text-muted-foreground">
-            {q ? `${results.length} ${results.length === 1 ? "result" : "results"}` : "Recent notes"}
+            {q ? `${results.length} ${results.length === 1 ? "result" : "results"}` : "Recent"}
           </h2>
           {results.length === 0 ? (
             <p className="rounded-xl border border-dashed p-8 text-center text-sm text-muted-foreground">
-              {q ? "No notes match your search." : "No notes yet — tap the pen to write your first one."}
+              {q ? "Nothing found." : "Nothing yet. Tap New to start."}
             </p>
           ) : (
             <ul className="flex flex-col gap-1.5">
@@ -151,9 +202,9 @@ export function HomeScreen({ notes, folders, onNewNote, onOpenNote, onDeleteNote
                         <p className="flex items-center gap-1.5">
                           <span
                             className="size-2 rounded-full"
-                            style={{ backgroundColor: folder?.color ?? "var(--muted-foreground)" }}
+                            style={{ backgroundColor: KIND_META[n.kind].color }}
                           />
-                          {folder?.name ?? "Unfiled"}
+                          {n.kind === "note" ? (folder?.name ?? "Note") : KIND_META[n.kind].label}
                         </p>
                         <AttachmentBadges attachments={n.attachments} />
                       </div>

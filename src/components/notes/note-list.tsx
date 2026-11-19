@@ -1,8 +1,31 @@
 "use client";
 
 import * as React from "react";
-import { ArrowUpDown, Pin, Plus, Search, StickyNote, X } from "lucide-react";
+import {
+  ArrowUpDown,
+  Check,
+  FolderClosed,
+  FolderInput,
+  Inbox,
+  ListChecks,
+  Pin,
+  Plus,
+  Search,
+  StickyNote,
+  Trash2,
+  X,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { SidebarTrigger } from "@/components/ui/sidebar";
@@ -10,9 +33,11 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { noteTitle, type Folder, type Note } from "@/lib/notes-store";
+import { MOODS, noteTitle, type Folder, type Kind, type Note } from "@/lib/notes-store";
+import { formatDay } from "@/lib/dates";
 import { NOTE_DRAG_TYPE } from "./app-sidebar";
 import { AttachmentBadges } from "./note-attachments";
 import { cn } from "@/lib/utils";
@@ -45,6 +70,11 @@ type Props = {
   onSort: (s: SortKey) => void;
   onSelect: (id: string) => void;
   onNewNote: () => void;
+  kind: Kind;
+  showSort: boolean;
+  canMove: boolean;
+  onBulkDelete: (ids: string[]) => void;
+  onBulkMove: (ids: string[], folderId: string | null) => void;
   showFolderTag: boolean;
 };
 
@@ -59,8 +89,15 @@ export function NoteList({
   onSort,
   onSelect,
   onNewNote,
+  kind,
+  showSort,
+  canMove,
+  onBulkDelete,
+  onBulkMove,
   showFolderTag,
 }: Props) {
+  const isJournal = kind === "journal";
+  const noun = isJournal ? (["entry", "entries"] as const) : (["note", "notes"] as const);
   const searchRef = React.useRef<HTMLInputElement>(null);
 
   React.useEffect(() => {
@@ -77,16 +114,75 @@ export function NoteList({
 
   const folderMap = React.useMemo(() => new Map(folders.map((f) => [f.id, f])), [folders]);
 
+  // Multi-select: ids that no longer appear (deleted, moved out, filtered) are ignored.
+  const [selecting, setSelecting] = React.useState(false);
+  const [selected, setSelected] = React.useState<Set<string>>(new Set());
+  const [confirmDelete, setConfirmDelete] = React.useState(false);
+  const selectedIds = React.useMemo(() => notes.filter((n) => selected.has(n.id)).map((n) => n.id), [notes, selected]);
+  const allSelected = notes.length > 0 && selectedIds.length === notes.length;
+
+  const toggle = (id: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  const selectAll = () => setSelected(new Set(notes.map((n) => n.id)));
+  const exitSelecting = () => {
+    setSelecting(false);
+    setSelected(new Set());
+    setConfirmDelete(false);
+  };
+  const moveSelected = (folderId: string | null) => {
+    onBulkMove(selectedIds, folderId);
+    exitSelecting();
+  };
+
+  React.useEffect(() => {
+    if (!selecting) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !(e.target as HTMLElement)?.closest("[role=dialog],[role=menu]")) {
+        setSelecting(false);
+        setSelected(new Set());
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selecting]);
+
   return (
     <section className="flex h-full min-h-0 w-full flex-col border-r bg-background md:w-80 lg:w-96 md:shrink-0">
       <header className="flex flex-col gap-3 p-4 pb-3">
-        <div className="flex items-center gap-2">
-          <SidebarTrigger className="-ml-1 md:hidden" />
-          <h1 className="min-w-0 flex-1 truncate text-lg font-semibold tracking-tight">{heading}</h1>
-          <span className="text-xs text-muted-foreground tabular-nums">
-            {notes.length} {notes.length === 1 ? "note" : "notes"}
-          </span>
-        </div>
+        {selecting ? (
+          <div className="flex items-center gap-2">
+            <h1 className="min-w-0 flex-1 truncate text-lg font-semibold tracking-tight" aria-live="polite">
+              {selectedIds.length === 0 ? "Select notes" : `${selectedIds.length} selected`}
+            </h1>
+            <Button variant="ghost" size="sm" onClick={allSelected ? () => setSelected(new Set()) : selectAll}>
+              {allSelected ? "Deselect all" : "Select all"}
+            </Button>
+            <Button variant="outline" size="sm" onClick={exitSelecting}>
+              Done
+            </Button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2">
+            <SidebarTrigger className="-ml-1 md:hidden" />
+            <h1 className="min-w-0 truncate text-lg font-semibold tracking-tight">{heading}</h1>
+            <span className="flex-1 text-xs text-muted-foreground tabular-nums">
+              {notes.length} {notes.length === 1 ? noun[0] : noun[1]}
+            </span>
+            {notes.length > 0 && (
+              <Button variant="ghost" size="sm" onClick={() => setSelecting(true)}>
+                <ListChecks /> Select
+              </Button>
+            )}
+            <Button size="sm" onClick={onNewNote}>
+              <Plus /> New
+            </Button>
+          </div>
+        )}
         <div className="flex items-center gap-2">
           <div className="relative flex-1">
             <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -94,7 +190,7 @@ export function NoteList({
               ref={searchRef}
               value={query}
               onChange={(e) => onQuery(e.target.value)}
-              placeholder="Search notes  ( / )"
+              placeholder={`Search ${noun[1]}  ( / )`}
               className="pr-8 pl-8"
               onKeyDown={(e) => e.key === "Escape" && (onQuery(""), e.currentTarget.blur())}
             />
@@ -108,6 +204,7 @@ export function NoteList({
               </button>
             )}
           </div>
+          {showSort && (
           <DropdownMenu>
             <DropdownMenuTrigger
               render={<Button variant="outline" size="icon" aria-label="Sort notes" title="Sort notes" />}
@@ -122,6 +219,7 @@ export function NoteList({
               ))}
             </DropdownMenuContent>
           </DropdownMenu>
+          )}
         </div>
       </header>
 
@@ -139,7 +237,7 @@ export function NoteList({
             </div>
             {!query && (
               <Button onClick={onNewNote} size="sm">
-                <Plus /> New note
+                <Plus /> {isJournal ? "New entry" : "New note"}
               </Button>
             )}
           </div>
@@ -151,31 +249,60 @@ export function NoteList({
               return (
                 <li key={n.id}>
                   <button
-                    draggable
+                    draggable={!selecting && kind === "note"}
                     onDragStart={(e) => {
                       e.dataTransfer.setData(NOTE_DRAG_TYPE, n.id);
                       e.dataTransfer.effectAllowed = "move";
                     }}
-                    onClick={() => onSelect(n.id)}
+                    onClick={() => (selecting ? toggle(n.id) : onSelect(n.id))}
+                    aria-pressed={selecting ? selected.has(n.id) : undefined}
                     className={cn(
-                      "group w-full cursor-pointer rounded-xl border border-transparent px-3 py-2.5 text-left transition-colors hover:bg-muted/70",
-                      selectedId === n.id && "border-border bg-muted shadow-xs",
+                      "group flex w-full cursor-pointer items-start gap-3 rounded-xl border border-transparent px-3 py-2.5 text-left transition-colors hover:bg-muted/70",
+                      !selecting && selectedId === n.id && "border-border bg-muted shadow-xs",
+                      selecting && selected.has(n.id) && "border-primary/40 bg-primary/5",
                     )}
                   >
+                    {selecting && (
+                      <span
+                        aria-hidden="true"
+                        className={cn(
+                          "mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-md border",
+                          selected.has(n.id)
+                            ? "border-primary bg-primary text-primary-foreground"
+                            : "border-muted-foreground/40 bg-background",
+                        )}
+                      >
+                        {selected.has(n.id) && <Check className="size-3.5" />}
+                      </span>
+                    )}
+                    <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <p
                         className={cn(
                           "min-w-0 flex-1 truncate text-sm font-medium",
-                          !n.title.trim() && "text-muted-foreground italic",
+                          !isJournal && !n.title.trim() && "text-muted-foreground italic",
                         )}
                       >
-                        {noteTitle(n)}
+                        {isJournal && n.date ? formatDay(n.date, { absolute: true }) : noteTitle(n)}
                       </p>
                       {n.pinned && <Pin className="size-3.5 shrink-0 fill-current text-primary" />}
-                      <span className="shrink-0 text-xs text-muted-foreground">{formatDate(n.updatedAt)}</span>
+                      {isJournal ? (
+                        n.mood && (
+                          <span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
+                            <span
+                              className="size-2 rounded-full"
+                              style={{ backgroundColor: MOODS.find((m) => m.id === n.mood)?.color }}
+                            />
+                            {MOODS.find((m) => m.id === n.mood)?.label}
+                          </span>
+                        )
+                      ) : (
+                        <span className="shrink-0 text-xs text-muted-foreground">{formatDate(n.updatedAt)}</span>
+                      )}
                     </div>
                     <p className="mt-0.5 line-clamp-2 text-xs leading-relaxed text-muted-foreground">
-                      {preview || "No additional text"}
+                      {isJournal && n.title.trim() ? <b className="font-medium text-foreground/80">{n.title.trim()} · </b> : null}
+                      {preview || (isJournal ? "Nothing written yet" : "No additional text")}
                     </p>
                     {n.attachments.length > 0 && (
                       <div className="mt-1.5">
@@ -191,6 +318,7 @@ export function NoteList({
                         {folder?.name ?? "Unfiled"}
                       </p>
                     )}
+                    </div>
                   </button>
                 </li>
               );
@@ -198,6 +326,66 @@ export function NoteList({
           </ul>
         )}
       </ScrollArea>
+
+      {selecting && (
+        <div className="flex items-center gap-2 border-t bg-background p-3" role="toolbar" aria-label="Bulk actions">
+          {canMove && (
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              disabled={selectedIds.length === 0}
+              render={<Button variant="outline" className="flex-1" />}
+            >
+              <FolderInput /> Move to folder
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" side="top" className="min-w-52">
+              <DropdownMenuItem onClick={() => moveSelected(null)}>
+                <Inbox /> Unfiled
+              </DropdownMenuItem>
+              {folders.length > 0 && <DropdownMenuSeparator />}
+              {folders.map((f) => (
+                <DropdownMenuItem key={f.id} onClick={() => moveSelected(f.id)}>
+                  <FolderClosed style={{ color: f.color }} /> {f.name}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+          )}
+          <Button
+            variant="destructive"
+            className="flex-1"
+            disabled={selectedIds.length === 0}
+            onClick={() => setConfirmDelete(true)}
+          >
+            <Trash2 /> Delete
+          </Button>
+        </div>
+      )}
+
+      <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Delete {selectedIds.length} {selectedIds.length === 1 ? noun[0] : noun[1]}?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {selectedIds.length === 1 ? "This note" : "These notes"} and any photos or voice notes attached will be
+              permanently removed. This can’t be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep {selectedIds.length === 1 ? noun[0] : noun[1]}</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                onBulkDelete(selectedIds);
+                exitSelecting();
+              }}
+            >
+              Delete {selectedIds.length === 1 ? noun[0] : noun[1]}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </section>
   );
 }

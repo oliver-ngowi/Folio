@@ -2,16 +2,17 @@
 
 import * as React from "react";
 import {
+  CalendarDays,
+  CircleCheck,
   FileText,
   FolderClosed,
   FolderPlus,
   House,
-  Inbox,
   LogOut,
   MoreHorizontal,
   Pencil,
-  Pin,
   Plus,
+  NotebookText,
   Trash2,
 } from "lucide-react";
 import {
@@ -41,17 +42,25 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { Logo } from "@/components/logo";
 import { AppearanceDialog } from "@/components/appearance-dialog";
 import { useAuth } from "@/lib/auth";
-import type { Folder, Note, View } from "@/lib/notes-store";
+import { KIND_META, type Folder, type Kind, type Note, type View } from "@/lib/notes-store";
 import { cn } from "@/lib/utils";
 
 export const NOTE_DRAG_TYPE = "application/x-folio-note";
+
+const NAV: { view: View; label: string; Icon: React.ComponentType }[] = [
+  { view: { type: "home" }, label: "Home", Icon: House },
+  { view: { type: "notes" }, label: "Notes", Icon: FileText },
+  { view: { type: "journal" }, label: "Journal", Icon: NotebookText },
+  { view: { type: "tasks" }, label: "Tasks", Icon: CircleCheck },
+  { view: { type: "calendar" }, label: "Calendar", Icon: CalendarDays },
+];
 
 type Props = {
   folders: Folder[];
   notes: Note[];
   view: View;
   onViewChange: (v: View) => void;
-  onNewNote: () => void;
+  onNewEntry: (kind: Kind) => void;
   onNewFolder: () => void;
   onEditFolder: (f: Folder) => void;
   onDeleteFolder: (f: Folder) => void;
@@ -63,7 +72,7 @@ export function AppSidebar({
   notes,
   view,
   onViewChange,
-  onNewNote,
+  onNewEntry,
   onNewFolder,
   onEditFolder,
   onDeleteFolder,
@@ -73,6 +82,7 @@ export function AppSidebar({
   const auth = useAuth();
 
   const count = (pred: (n: Note) => boolean) => notes.filter(pred).length;
+  const openTasks = count((n) => n.kind === "task" && !n.done);
 
   // Props that turn a sidebar entry into a drop zone for dragged notes.
   const dropProps = (key: string, folderId: string | null) => ({
@@ -109,57 +119,35 @@ export function AppSidebar({
             <p className="text-xs text-muted-foreground">Notes, neatly filed</p>
           </div>
         </div>
-        <Button onClick={onNewNote} className="w-full justify-start gap-2" size="lg">
-          <Plus className="size-4" />
-          New note
-        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger render={<Button className="w-full justify-start gap-2" size="lg" />}>
+            <Plus className="size-4" />
+            New
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="min-w-52">
+            {(["note", "journal", "task"] as Kind[]).map((k) => (
+              <DropdownMenuItem key={k} onClick={() => onNewEntry(k)}>
+                <span className="size-2.5 rounded-full" style={{ backgroundColor: KIND_META[k].color }} />
+                {k === "journal" ? "Journal entry" : KIND_META[k].label}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </SidebarHeader>
 
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupContent>
             <SidebarMenu>
-              <SidebarMenuItem>
-                <SidebarMenuButton
-                  isActive={isActive({ type: "home" })}
-                  onClick={() => onViewChange({ type: "home" })}
-                >
-                  <House />
-                  <span>Home</span>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-              <SidebarMenuItem>
-                <SidebarMenuButton
-                  isActive={isActive({ type: "all" })}
-                  onClick={() => onViewChange({ type: "all" })}
-                >
-                  <FileText />
-                  <span>All notes</span>
-                </SidebarMenuButton>
-                <SidebarMenuBadge>{notes.length}</SidebarMenuBadge>
-              </SidebarMenuItem>
-              <SidebarMenuItem>
-                <SidebarMenuButton
-                  isActive={isActive({ type: "pinned" })}
-                  onClick={() => onViewChange({ type: "pinned" })}
-                >
-                  <Pin />
-                  <span>Pinned</span>
-                </SidebarMenuButton>
-                <SidebarMenuBadge>{count((n) => n.pinned)}</SidebarMenuBadge>
-              </SidebarMenuItem>
-              <SidebarMenuItem>
-                <SidebarMenuButton
-                  isActive={isActive({ type: "unfiled" })}
-                  onClick={() => onViewChange({ type: "unfiled" })}
-                  className={cn(dropClass("unfiled"))}
-                  {...dropProps("unfiled", null)}
-                >
-                  <Inbox />
-                  <span>Unfiled</span>
-                </SidebarMenuButton>
-                <SidebarMenuBadge>{count((n) => n.folderId === null)}</SidebarMenuBadge>
-              </SidebarMenuItem>
+              {NAV.map(({ view: v, label, Icon }) => (
+                <SidebarMenuItem key={v.type}>
+                  <SidebarMenuButton isActive={isActive(v)} onClick={() => onViewChange(v)}>
+                    <Icon />
+                    <span>{label}</span>
+                  </SidebarMenuButton>
+                  {v.type === "tasks" && openTasks > 0 && <SidebarMenuBadge>{openTasks}</SidebarMenuBadge>}
+                </SidebarMenuItem>
+              ))}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
@@ -194,7 +182,7 @@ export function AppSidebar({
                     <span className="truncate">{f.name}</span>
                   </SidebarMenuButton>
                   <SidebarMenuBadge className="peer-hover/menu-button:opacity-0 group-hover/menu-item:opacity-0">
-                    {count((n) => n.folderId === f.id)}
+                    {count((n) => n.kind === "note" && n.folderId === f.id)}
                   </SidebarMenuBadge>
                   <DropdownMenu>
                     <DropdownMenuTrigger render={<SidebarMenuAction showOnHover />}>

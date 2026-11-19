@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { addDays, todayStr } from "./dates";
 import { deleteBlob } from "./media-store";
 import { supabaseEnabled } from "./supabase";
 import { fetchRemote, pushChanges } from "./supabase-sync";
@@ -16,20 +17,70 @@ export type Attachment = {
   createdAt: number;
 };
 
+/** note = things to remember, journal = personal reflections, task = things to do. */
+export type Kind = "note" | "journal" | "task";
+
+export const KIND_META: Record<Kind, { label: string; plural: string; color: string }> = {
+  note: { label: "Note", plural: "Notes", color: "#60a5fa" },
+  journal: { label: "Journal", plural: "Journal", color: "#fb923c" },
+  task: { label: "Task", plural: "Tasks", color: "#34d399" },
+};
+
+export const MOODS = [
+  { id: "happy", label: "Happy", color: "#facc15" },
+  { id: "calm", label: "Calm", color: "#5eead4" },
+  { id: "okay", label: "Okay", color: "#7dd3fc" },
+  { id: "tired", label: "Tired", color: "#c4b5fd" },
+  { id: "sad", label: "Sad", color: "#fda4af" },
+] as const;
+
 export type Note = {
   id: string;
+  kind: Kind;
   title: string;
   content: string;
   attachments: Attachment[];
   folderId: string | null;
   pinned: boolean;
+  /** Journal: the day it is about. Task: the due date. "YYYY-MM-DD". */
+  date: string | null;
+  /** Task due time, "HH:mm". */
+  time: string | null;
+  /** Task completed. */
+  done: boolean;
+  /** Task reminder, minutes before it is due (0 = at due time). */
+  remind: number | null;
+  /** Journal mood id. */
+  mood: string | null;
   createdAt: number;
   updatedAt: number;
 };
 
+/** Fills in fields that older saved notes don't have. */
+export function normalizeNote(n: Partial<Note> & Pick<Note, "id">): Note {
+  return {
+    title: "",
+    content: "",
+    folderId: null,
+    pinned: false,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    ...n,
+    kind: n.kind ?? "note",
+    attachments: n.attachments ?? [],
+    date: n.date ?? null,
+    time: n.time ?? null,
+    done: n.done ?? false,
+    remind: n.remind ?? null,
+    mood: n.mood ?? null,
+  };
+}
+
 type State = { folders: Folder[]; notes: Note[] };
 
-type NotePatch = Partial<Pick<Note, "title" | "content" | "folderId" | "pinned">>;
+type NotePatch = Partial<
+  Pick<Note, "title" | "content" | "folderId" | "pinned" | "date" | "time" | "done" | "remind" | "mood">
+>;
 
 type Action =
   | { type: "hydrate"; state: State }
@@ -62,11 +113,14 @@ export const uid = () =>
 
 function seed(): State {
   const raw = seedRaw();
-  return { ...raw, notes: raw.notes.map((n) => ({ ...n, attachments: [] })) };
+  return { ...raw, notes: raw.notes.map((n) => normalizeNote(n)) };
 }
 
-function seedRaw(): { folders: Folder[]; notes: Omit<Note, "attachments">[] } {
+type SeedNote = Partial<Note> & Pick<Note, "id" | "title" | "content" | "folderId" | "pinned" | "createdAt" | "updatedAt">;
+
+function seedRaw(): { folders: Folder[]; notes: SeedNote[] } {
   const now = Date.now();
+  const today = todayStr();
   const work = { id: uid(), name: "Work", color: FOLDER_COLORS[0] };
   const personal = { id: uid(), name: "Personal", color: FOLDER_COLORS[3] };
   const ideas = { id: uid(), name: "Ideas", color: FOLDER_COLORS[2] };
@@ -77,7 +131,7 @@ function seedRaw(): { folders: Folder[]; notes: Omit<Note, "attachments">[] } {
         id: uid(),
         title: "Welcome to Folio",
         content:
-          "Folio keeps your notes organised in folders.\n\n• Create a folder from the + next to “Folders” in the sidebar.\n• Press “New note” to start writing — everything saves automatically.\n• Drag a note from the list onto a folder to move it.\n• Pin the notes you need most so they stay at the top.\n\nAll data is stored privately in this browser.",
+          "Folio keeps three things apart:\n\n• Notes – things you want to remember.\n• Journal – your thoughts and days.\n• Tasks – things to do, with dates and reminders.\n\nPress “New” to start any of them. Notes can live in folders; drag a note onto a folder to move it. The Calendar shows your tasks and journal days together.",
         folderId: null,
         pinned: true,
         createdAt: now,
@@ -109,6 +163,41 @@ function seedRaw(): { folders: Folder[]; notes: Omit<Note, "attachments">[] } {
         pinned: false,
         createdAt: now - 172_800_000,
         updatedAt: now - 172_800_000,
+      },
+      {
+        id: uid(),
+        kind: "journal",
+        title: "A slow, good morning",
+        content: "Coffee on the balcony, no phone. I want more mornings like this.",
+        folderId: null,
+        pinned: false,
+        date: today,
+        mood: "calm",
+        createdAt: now - 1_800_000,
+        updatedAt: now - 1_800_000,
+      },
+      {
+        id: uid(),
+        kind: "task",
+        title: "Book dentist appointment",
+        content: "",
+        folderId: null,
+        pinned: false,
+        date: today,
+        createdAt: now - 7_200_000,
+        updatedAt: now - 7_200_000,
+      },
+      {
+        id: uid(),
+        kind: "task",
+        title: "Send the project update",
+        content: "",
+        folderId: null,
+        pinned: false,
+        date: addDays(today, 2),
+        time: "10:00",
+        createdAt: now - 10_800_000,
+        updatedAt: now - 10_800_000,
       },
     ],
   };
@@ -181,7 +270,11 @@ type Store = {
   folders: Folder[];
   notes: Note[];
   hydrated: boolean;
-  createNote: (folderId: string | null) => string;
+  createNote: (
+    folderId: string | null,
+    kind?: Kind,
+    init?: { title?: string; date?: string | null; time?: string | null },
+  ) => string;
   updateNote: (id: string, patch: NotePatch) => void;
   deleteNote: (id: string) => void;
   addAttachment: (noteId: string, attachment: Attachment) => void;
@@ -216,8 +309,8 @@ export function NotesProvider({ children, userId }: { children: React.ReactNode;
       if (raw) {
         const parsed = JSON.parse(raw) as State;
         if (Array.isArray(parsed.folders) && Array.isArray(parsed.notes)) {
-          // Notes saved before attachments existed get an empty list.
-          loaded = { ...parsed, notes: parsed.notes.map((n) => ({ ...n, attachments: n.attachments ?? [] })) };
+          // Notes saved before attachments / kinds existed get sensible defaults.
+          loaded = { ...parsed, notes: parsed.notes.map((n) => normalizeNote(n)) };
         }
       }
     } catch {
@@ -282,18 +375,18 @@ export function NotesProvider({ children, userId }: { children: React.ReactNode;
       folders: state.folders,
       notes: state.notes,
       hydrated,
-      createNote: (folderId) => {
+      createNote: (folderId, kind = "note", init = {}) => {
         const now = Date.now();
-        const note: Note = {
+        const note: Note = normalizeNote({
           id: uid(),
-          title: "",
-          content: "",
-          attachments: [],
-          folderId,
-          pinned: false,
+          kind,
+          title: init.title ?? "",
+          folderId: kind === "note" ? folderId : null,
+          date: init.date ?? (kind === "journal" ? todayStr() : null),
+          time: init.time ?? null,
           createdAt: now,
           updatedAt: now,
-        };
+        });
         dispatch({ type: "addNote", note });
         return note.id;
       },
@@ -330,11 +423,12 @@ export function useNotes() {
 
 export type View =
   | { type: "home" }
-  | { type: "all" }
-  | { type: "pinned" }
-  | { type: "unfiled" }
+  | { type: "notes" }
+  | { type: "journal" }
+  | { type: "tasks" }
+  | { type: "calendar" }
   | { type: "folder"; id: string };
 
-export function noteTitle(n: Pick<Note, "title">) {
-  return n.title.trim() || "Untitled note";
+export function noteTitle(n: Pick<Note, "title"> & { kind?: Kind }) {
+  return n.title.trim() || (n.kind === "task" ? "Untitled task" : n.kind === "journal" ? "Untitled entry" : "Untitled note");
 }

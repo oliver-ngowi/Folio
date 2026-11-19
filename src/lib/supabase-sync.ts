@@ -1,6 +1,6 @@
 "use client";
 
-import type { Attachment, Folder, Note } from "./notes-store";
+import { normalizeNote, type Attachment, type Folder, type Note } from "./notes-store";
 import { getSupabase, getUserId } from "./supabase";
 
 export type SyncState = { folders: Folder[]; notes: Note[] };
@@ -12,6 +12,12 @@ type NoteRow = {
   title: string;
   content: string;
   pinned: boolean;
+  kind: Note["kind"];
+  date: string | null;
+  time: string | null;
+  done: boolean;
+  remind: number | null;
+  mood: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -34,6 +40,12 @@ const noteRow = (n: Note): NoteRow => ({
   title: n.title,
   content: n.content,
   pinned: n.pinned,
+  kind: n.kind,
+  date: n.date,
+  time: n.time,
+  done: n.done,
+  remind: n.remind,
+  mood: n.mood,
   created_at: iso(n.createdAt),
   updated_at: iso(n.updatedAt),
 });
@@ -75,7 +87,8 @@ export async function fetchRemote(): Promise<SyncState | null> {
 
   const [folders, notes, attachments] = await Promise.all([
     sb.from("folders").select("id,name,color"),
-    sb.from("notes").select("id,folder_id,title,content,pinned,created_at,updated_at"),
+    // "*" so an older database without the kind/date/task columns still loads.
+    sb.from("notes").select("*"),
     sb.from("attachments").select("id,note_id,kind,name,size,duration,created_at"),
   ]);
   const error = folders.error ?? notes.error ?? attachments.error;
@@ -101,16 +114,24 @@ export async function fetchRemote(): Promise<SyncState | null> {
   return {
     folders: (folders.data ?? []) as FolderRow[],
     notes: ((notes.data ?? []) as NoteRow[])
-      .map((n) => ({
-        id: n.id,
-        title: n.title,
-        content: n.content,
-        folderId: n.folder_id,
-        pinned: n.pinned,
-        createdAt: Date.parse(n.created_at),
-        updatedAt: Date.parse(n.updated_at),
-        attachments: (byNote.get(n.id) ?? []).sort((a, b) => a.createdAt - b.createdAt),
-      }))
+      .map((n) =>
+        normalizeNote({
+          id: n.id,
+          kind: n.kind,
+          title: n.title,
+          content: n.content,
+          folderId: n.folder_id,
+          pinned: n.pinned,
+          date: n.date,
+          time: n.time,
+          done: n.done,
+          remind: n.remind,
+          mood: n.mood,
+          createdAt: Date.parse(n.created_at),
+          updatedAt: Date.parse(n.updated_at),
+          attachments: (byNote.get(n.id) ?? []).sort((a, b) => a.createdAt - b.createdAt),
+        }),
+      )
       .sort((a, b) => b.createdAt - a.createdAt),
   };
 }

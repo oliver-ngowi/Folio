@@ -19,6 +19,15 @@ create table if not exists public.notes (
   updated_at timestamptz not null
 );
 
+-- Notes vs journal entries vs tasks. Safe to re-run on an existing database.
+alter table public.notes add column if not exists kind   text    not null default 'note'
+  check (kind in ('note', 'journal', 'task'));
+alter table public.notes add column if not exists date   date;       -- journal day / task due date
+alter table public.notes add column if not exists "time" text;       -- task due time, 'HH:mm'
+alter table public.notes add column if not exists done   boolean not null default false;
+alter table public.notes add column if not exists remind integer;    -- task reminder, minutes before due
+alter table public.notes add column if not exists mood   text;       -- journal mood
+
 create table if not exists public.attachments (
   id         uuid primary key,
   user_id    uuid not null default auth.uid() references auth.users on delete cascade,

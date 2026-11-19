@@ -13,13 +13,26 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
-import { FOLDER_COLORS, NotesProvider, noteTitle, useNotes, type Folder, type View } from "@/lib/notes-store";
+import {
+  FOLDER_COLORS,
+  NotesProvider,
+  noteTitle,
+  useNotes,
+  type Folder,
+  type Kind,
+  type View,
+} from "@/lib/notes-store";
 import { AppSidebar } from "./app-sidebar";
+import { CalendarView } from "./calendar-view";
 import { HomeScreen } from "./home-screen";
 import { FolderDialog } from "./folder-dialog";
 import { NoteEditor } from "./note-editor";
 import { NoteList, type SortKey } from "./note-list";
+import { ReminderWatcher } from "./reminders";
+import { TaskList } from "./task-list";
 import { cn } from "@/lib/utils";
+
+const NOUN: Record<Kind, string> = { note: "note", journal: "entry", task: "task" };
 
 function NotesWorkspace() {
   const store = useNotes();
@@ -40,54 +53,70 @@ function NotesWorkspace() {
   const activeFolder =
     rawView.type === "folder" ? folders.find((f) => f.id === rawView.id) : undefined;
   const view = React.useMemo<View>(
-    () => (rawView.type === "folder" && !activeFolder ? { type: "all" } : rawView),
+    () => (rawView.type === "folder" && !activeFolder ? { type: "notes" } : rawView),
     [rawView, activeFolder],
   );
+
+  // Which kind of entry the current list shows.
+  const listKind: Kind = view.type === "journal" ? "journal" : view.type === "tasks" ? "task" : "note";
 
   const visible = React.useMemo(() => {
     const q = query.trim().toLowerCase();
     const list = notes.filter((n) => {
-      if (view.type === "pinned" && !n.pinned) return false;
-      if (view.type === "unfiled" && n.folderId !== null) return false;
+      if (n.kind !== listKind) return false;
       if (view.type === "folder" && n.folderId !== view.id) return false;
       if (q && !(n.title + "\n" + n.content).toLowerCase().includes(q)) return false;
       return true;
     });
     return list.sort((a, b) => {
+      // The journal reads like a diary: newest day first.
+      if (listKind === "journal") return (b.date ?? "").localeCompare(a.date ?? "") || b.createdAt - a.createdAt;
       if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
       if (sort === "title") return noteTitle(a).localeCompare(noteTitle(b));
       return sort === "created" ? b.createdAt - a.createdAt : b.updatedAt - a.updatedAt;
     });
-  }, [notes, view, query, sort]);
+  }, [notes, view, listKind, query, sort]);
 
   const selected = notes.find((n) => n.id === selectedId) ?? null;
+  const deleting = notes.find((n) => n.id === noteToDelete);
 
   const heading =
-    view.type === "all"
-      ? "All notes"
-      : view.type === "pinned"
-        ? "Pinned"
-        : view.type === "unfiled"
-          ? "Unfiled"
-          : (activeFolder?.name ?? "Folder");
+    view.type === "journal" ? "Journal" : view.type === "folder" ? (activeFolder?.name ?? "Folder") : "Notes";
 
-  const newNote = () => {
-    const folderId = view.type === "folder" ? view.id : null;
+  const viewForKind = (kind: Kind): View =>
+    kind === "journal" ? { type: "journal" } : kind === "task" ? { type: "tasks" } : view.type === "folder" ? view : { type: "notes" };
+
+  const newEntry = (kind: Kind, init?: { title?: string; date?: string | null }) => {
     setQuery("");
-    if (view.type === "home") setView({ type: "all" });
-    setSelectedId(store.createNote(folderId));
+    const folderId = view.type === "folder" ? view.id : null;
+    setView(viewForKind(kind));
+    setSelectedId(store.createNote(folderId, kind, init));
   };
 
   const changeView = (v: View) => {
     setView(v);
     setQuery("");
-    // Leaving a note open when switching to Home would hide the Home screen.
-    if (v.type === "home") setSelectedId(null);
+    setSelectedId(null);
   };
 
-  const openFromHome = (id: string) => {
-    setView({ type: "all" });
+  const openEntry = (id: string) => {
+    const n = notes.find((x) => x.id === id);
+    if (!n) return;
+    setView(
+      n.kind === "note" && view.type === "folder" && n.folderId === view.id ? view : viewForKind(n.kind),
+    );
     setSelectedId(id);
+  };
+
+  const addTask = (title: string, date: string | null) => {
+    store.createNote(null, "task", { title, date });
+  };
+
+  const toggleTask = (id: string, done: boolean) => store.updateNote(id, { done });
+
+  const writeJournal = (date: string) => {
+    setView({ type: "journal" });
+    setSelectedId(store.createNote(null, "journal", { date }));
   };
 
   if (!hydrated) {
@@ -100,6 +129,22 @@ function NotesWorkspace() {
     );
   }
 
+  const editor = (
+    <div className={cn("h-full min-h-0 min-w-0 flex-1", !selected && "hidden md:flex")}>
+      <NoteEditor
+        key={selected?.id ?? "none"}
+        note={selected}
+        folders={folders}
+        onChange={(patch) => selected && store.updateNote(selected.id, patch)}
+        onDelete={() => selected && setNoteToDelete(selected.id)}
+        onBack={() => setSelectedId(null)}
+        onNewNote={() => newEntry(listKind)}
+        onAddAttachment={(a) => selected && store.addAttachment(selected.id, a)}
+        onRemoveAttachment={(id) => selected && store.removeAttachment(selected.id, id)}
+      />
+    </div>
+  );
+
   return (
     <SidebarProvider className="h-svh">
       <AppSidebar
@@ -107,7 +152,7 @@ function NotesWorkspace() {
         notes={notes}
         view={view}
         onViewChange={changeView}
-        onNewNote={newNote}
+        onNewEntry={(k) => newEntry(k)}
         onNewFolder={() => setFolderDialog({ open: true, folder: null })}
         onEditFolder={(f) => setFolderDialog({ open: true, folder: f })}
         onDeleteFolder={setFolderToDelete}
@@ -115,43 +160,68 @@ function NotesWorkspace() {
       />
       <SidebarInset className="min-h-0 min-w-0 flex-row overflow-hidden">
         {view.type === "home" ? (
-          <HomeScreen notes={notes} folders={folders} onNewNote={newNote} onOpenNote={openFromHome}
+          <HomeScreen
+            notes={notes}
+            folders={folders}
+            onNewEntry={(k) => newEntry(k)}
+            onOpenNote={openEntry}
             onDeleteNote={store.deleteNote}
+            onToggleTask={toggleTask}
           />
+        ) : view.type === "calendar" ? (
+          <CalendarView
+            notes={notes}
+            onOpen={openEntry}
+            onToggleTask={toggleTask}
+            onAddTask={(title, date) => addTask(title, date)}
+            onWriteJournal={writeJournal}
+          />
+        ) : view.type === "tasks" ? (
+          <>
+            {/* On phones show either the list or the editor, never both. */}
+            <div className={cn("h-full min-h-0 w-full md:w-auto", selected && "hidden md:block")}>
+              <TaskList
+                tasks={notes.filter((n) => n.kind === "task")}
+                selectedId={selectedId}
+                onSelect={setSelectedId}
+                onToggle={toggleTask}
+                onAdd={addTask}
+              />
+            </div>
+            {editor}
+          </>
         ) : (
-        <>
-        {/* On phones show either the list or the editor, never both. */}
-        <div className={cn("h-full min-h-0 w-full md:w-auto", selected && "hidden md:block")}>
-          <NoteList
-            heading={heading}
-            notes={visible}
-            folders={folders}
-            selectedId={selectedId}
-            query={query}
-            onQuery={setQuery}
-            sort={sort}
-            onSort={setSort}
-            onSelect={setSelectedId}
-            onNewNote={newNote}
-            showFolderTag={view.type !== "folder"}
-          />
-        </div>
-        <div className={cn("h-full min-h-0 min-w-0 flex-1", !selected && "hidden md:flex")}>
-          <NoteEditor
-            key={selected?.id ?? "none"}
-            note={selected}
-            folders={folders}
-            onChange={(patch) => selected && store.updateNote(selected.id, patch)}
-            onDelete={() => selected && setNoteToDelete(selected.id)}
-            onBack={() => setSelectedId(null)}
-            onNewNote={newNote}
-            onAddAttachment={(a) => selected && store.addAttachment(selected.id, a)}
-            onRemoveAttachment={(id) => selected && store.removeAttachment(selected.id, id)}
-          />
-        </div>
-        </>
+          <>
+            <div className={cn("h-full min-h-0 w-full md:w-auto", selected && "hidden md:block")}>
+              <NoteList
+                key={view.type === "folder" ? `folder-${view.id}` : view.type}
+                heading={heading}
+                notes={visible}
+                folders={folders}
+                selectedId={selectedId}
+                query={query}
+                onQuery={setQuery}
+                sort={sort}
+                onSort={setSort}
+                onSelect={setSelectedId}
+                onNewNote={() => newEntry(listKind)}
+                kind={listKind}
+                showSort={listKind === "note"}
+                canMove={listKind === "note"}
+                onBulkDelete={(ids) => {
+                  ids.forEach((id) => store.deleteNote(id));
+                  if (selectedId && ids.includes(selectedId)) setSelectedId(null);
+                }}
+                onBulkMove={(ids, folderId) => ids.forEach((id) => store.updateNote(id, { folderId }))}
+                showFolderTag={view.type !== "folder" && listKind === "note"}
+              />
+            </div>
+            {editor}
+          </>
         )}
       </SidebarInset>
+
+      <ReminderWatcher notes={notes} onOpen={openEntry} />
 
       <FolderDialog
         open={folderDialog.open}
@@ -173,7 +243,7 @@ function NotesWorkspace() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete “{folderToDelete?.name}”?</AlertDialogTitle>
             <AlertDialogDescription>
-              The folder will be removed. Its notes are kept and moved to Unfiled.
+              The folder will be removed. Its notes are kept and moved out of the folder.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -191,8 +261,8 @@ function NotesWorkspace() {
       <AlertDialog open={!!noteToDelete} onOpenChange={(o) => !o && setNoteToDelete(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete this note?</AlertDialogTitle>
-            <AlertDialogDescription>This permanently removes the note and can’t be undone.</AlertDialogDescription>
+            <AlertDialogTitle>Delete this {NOUN[deleting?.kind ?? "note"]}?</AlertDialogTitle>
+            <AlertDialogDescription>This can’t be undone.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
@@ -205,7 +275,7 @@ function NotesWorkspace() {
                 }
               }}
             >
-              Delete note
+              Delete
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
